@@ -18,22 +18,40 @@ struct Analysis: Sendable {
     var suggestedName: String?
     var health = 50
     var healthNote = ""
+    /// Falso cuando no hubo forma de comprobar el contenido (un formato que macOS no abre):
+    /// en ese caso no se muestra un porcentaje, que sería inventado.
+    var verified = true
     var labels: [String] = []
 }
 
 enum Analyzer {
     static func analyze(url: URL, file: FoundFile) async -> Analysis {
-        var a: Analysis
+        let a: Analysis
         switch file.category {
         case .photo: a = analyzePhoto(url, ext: file.ext)
-        case .video: a = await analyzeMedia(url, video: true)
-        case .audio: a = await analyzeMedia(url, video: false)
+        case .video: a = await analyzeMedia(AVURLAsset(url: url), video: true, ext: file.ext)
+        case .audio: a = await analyzeMedia(AVURLAsset(url: url), video: false, ext: file.ext)
         case .document where file.ext == "pdf": a = analyzePDF(url)
         default: a = analyzeGeneric(url, file: file)
         }
+        return finish(a, file: file) {
+            guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+            defer { try? handle.close() }
+            return [UInt8]((try? handle.read(upToCount: 32)) ?? Data())
+        }
+    }
 
+    /// Un video servido directamente desde el disco escaneado: se analiza sin copiarlo antes.
+    /// `header` son sus primeros 32 bytes.
+    static func analyze(streaming asset: AVAsset, file: FoundFile, header: [UInt8]) async -> Analysis {
+        finish(await analyzeMedia(asset, video: true, ext: file.ext), file: file) { header }
+    }
+
+    private static func finish(_ analysis: Analysis, file: FoundFile, header: () -> [UInt8]?) -> Analysis {
+        var a = analysis
         // Para archivos recuperados por su nombre: ¿los datos en esa posición son realmente ese archivo?
-        if case .fileSystem = file.origin, !contentMatches(url, ext: file.ext) {
+        if case .fileSystem = file.origin, !contentMatches(header(), ext: file.ext) {
+            a.verified = true
             a.health = min(a.health, 10)
             a.healthNote = "El contenido no coincide con el tipo de archivo: esos sectores ya fueron reutilizados por otro archivo."
         } else if file.likelyOverwritten {
@@ -48,11 +66,9 @@ enum Analyzer {
         return a
     }
 
-    private static func contentMatches(_ url: URL, ext: String) -> Bool {
+    private static func contentMatches(_ header: [UInt8]?, ext: String) -> Bool {
         let candidates = Signatures.all.filter { $0.extensions.contains(ext) || (ext == "jpeg" && $0.extensions.contains("jpg")) }
-        guard !candidates.isEmpty, let handle = try? FileHandle(forReadingFrom: url) else { return true }
-        defer { try? handle.close() }
-        let header = [UInt8]((try? handle.read(upToCount: 32)) ?? Data())
+        guard !candidates.isEmpty, let header else { return true }
         if header.allSatisfy({ $0 == 0 }) { return false }
         return candidates.contains { $0.matches(header) }
     }
@@ -170,10 +186,19 @@ enum Analyzer {
 
     // MARK: Video y audio
 
-    private static func analyzeMedia(_ url: URL, video: Bool) async -> Analysis {
+    /// Contenedores que AVFoundation sabe abrir. Si uno de estos no abre, el archivo está dañado;
+    /// si no abre un MKV, un AVI o un WebM, solo significa que macOS no trae ese formato.
+    private static let nativeMedia: Set<String> = ["mp4", "mov", "m4v", "3gp", "mp3", "m4a", "wav", "aif", "aiff", "flac"]
+
+    private static func analyzeMedia(_ asset: AVAsset, video: Bool, ext: String) async -> Analysis {
         var a = Analysis()
-        let asset = AVURLAsset(url: url)
         guard let duration = try? await asset.load(.duration), duration.seconds.isFinite, duration.seconds > 0 else {
+            guard nativeMedia.contains(ext) else {
+                a.verified = false
+                a.healthNote = "macOS no puede abrir archivos \(ext.uppercased()) para comprobar su contenido. "
+                    + "Eso no significa que esté dañado: recupéralo y ábrelo con una app compatible, como VLC o IINA."
+                return a
+            }
             a.health = 10
             a.healthNote = video ? "No se pudo abrir el video: puede estar fragmentado o sobrescrito." : "No se pudo abrir el audio."
             return a

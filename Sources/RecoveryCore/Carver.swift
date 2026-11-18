@@ -46,7 +46,8 @@ public final class Carver {
     @discardableResult
     public func run(isCancelled: () -> Bool = { false },
                     progress: ((CarveProgress) -> Void)? = nil,
-                    onFound: (FoundFile) -> Void = { _ in }) -> [FoundFile] {
+                    onFound: (FoundFile) -> Void = { _ in },
+                    collectResults: Bool = true) -> [FoundFile] {
         var candidates = [[FileSignature]](repeating: [], count: 256)
         for sig in options.signatures {
             for b in sig.firstBytes { candidates[Int(b)].append(sig) }
@@ -60,7 +61,15 @@ public final class Carver {
         var offset = alignUp(options.start)
         let began = Date()
         var lastReport = Date.distantPast
+        // La app y el CLI consumen los resultados mediante `onFound`. Mantener otra copia de
+        // todos los archivos encontrados podía ocupar cientos de MB en un disco grande. Se
+        // conserva la colección solo para quienes usan el valor de retorno (por ejemplo, tests).
         var found: [FoundFile] = []
+        var foundCount = 0
+        // El prefetch cubre ocho páginas. No hace falta volver a encolarlo en cada página:
+        // hacerlo así llenaba la cola serial con miles de tareas pequeñas durante un escaneo
+        // largo, especialmente cuando el análisis de una firma tardaba más que la lectura.
+        var nextPrefetchAt: Int64 = 0
         // Archivos de longitud exacta que todavía cubren la posición actual. Sirve para marcar
         // lo que está dentro de otro cuando no se salta el interior.
         var active: [(range: Range<Int64>, ext: String)] = []
@@ -77,7 +86,10 @@ public final class Carver {
             let pageStart = index * Int64(reader.pageSize)
             // Que el disco vaya leyendo lo que sigue mientras se analiza esta página.
             let lastNeeded = (min(end, nextSkip) - 1) / Int64(reader.pageSize)
-            reader.prefetch((index + 1)..<min(index + 1 + Self.readAhead, lastNeeded + 1))
+            if index >= nextPrefetchAt {
+                reader.prefetch((index + 1)..<min(index + 1 + Self.readAhead, lastNeeded + 1))
+                nextPrefetchAt = index + Self.readAhead
+            }
             let page = reader.page(index)
             if page.isEmpty { break }
             var local = Int(offset - pageStart)
@@ -101,7 +113,8 @@ public final class Carver {
                         let file = FoundFile(ext: ext, extents: [Extent(offset: start, length: length)],
                                              origin: .carved(exactLength: sig.exactLength),
                                              embedded: parent != nil)
-                        found.append(file)
+                        foundCount += 1
+                        if collectResults { found.append(file) }
                         onFound(file)
                         if sig.exactLength && parent == nil {
                             let covered = start..<(start + length)
@@ -128,11 +141,11 @@ public final class Carver {
             if let progress, Date().timeIntervalSince(lastReport) > 0.25 {
                 lastReport = Date()
                 progress(CarveProgress(scanned: min(offset, end) - options.start, total: end - options.start,
-                                       found: found.count, elapsed: Date().timeIntervalSince(began)))
+                                       found: foundCount, elapsed: Date().timeIntervalSince(began)))
             }
         }
         progress?(CarveProgress(scanned: min(offset, end) - options.start, total: end - options.start,
-                                found: found.count, elapsed: Date().timeIntervalSince(began)))
+                                found: foundCount, elapsed: Date().timeIntervalSince(began)))
         return found
     }
 

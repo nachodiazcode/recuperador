@@ -6,13 +6,21 @@ public struct Partition: Sendable {
     public let name: String
 }
 
-public struct VolumeInfo: Sendable {
+public struct VolumeInfo: Codable, Hashable, Sendable {
     public let name: String
     public let format: String
     public let offset: Int64
     public let length: Int64
     /// Falso si no sabemos leer sus nombres (NTFS, APFS, HFS+...): solo sirve el escaneo profundo.
     public let namesSupported: Bool
+
+    public init(name: String, format: String, offset: Int64, length: Int64, namesSupported: Bool) {
+        self.name = name
+        self.format = format
+        self.offset = offset
+        self.length = length
+        self.namesSupported = namesSupported
+    }
 }
 
 // MARK: - Tablas de particiones

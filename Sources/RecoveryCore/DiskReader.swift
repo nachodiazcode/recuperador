@@ -42,6 +42,11 @@ public final class DiskReader: @unchecked Sendable {
     private var lru: [Int64] = []
     /// Páginas que algún hilo está leyendo ahora; quien las pida espera en vez de leerlas dos veces.
     private var inFlight = Set<Int64>()
+    /// Páginas ya solicitadas por el prefetch pero que todavía no han empezado a leerse.
+    /// Evita encolar la misma página varias veces cuando el consumidor avanza más rápido que
+    /// la cola de lectura.
+    private var prefetchPending = Set<Int64>()
+    private var prefetchWorkerActive = false
     private let maxCachedPages = 32
     private let prefetchQueue = DispatchQueue(label: "recuperador.prefetch", qos: .userInitiated)
 
@@ -126,11 +131,31 @@ public final class DiskReader: @unchecked Sendable {
         let wanted = range.clamped(to: 0..<(last + 1))
         guard !wanted.isEmpty else { return }
         lock.lock()
-        let missing = wanted.filter { cache[$0] == nil && !inFlight.contains($0) }
+        for index in wanted where cache[index] == nil && !inFlight.contains(index) {
+            prefetchPending.insert(index)
+        }
+        let startWorker = !prefetchPending.isEmpty && !prefetchWorkerActive
+        if startWorker { prefetchWorkerActive = true }
         lock.unlock()
-        guard !missing.isEmpty else { return }
-        prefetchQueue.async { [self] in
-            for index in missing { _ = page(index) }
+        guard startWorker else { return }
+        prefetchQueue.async { [self] in runPrefetchWorker() }
+    }
+
+    /// Mantiene una sola tarea de prefetch viva. Las solicitudes que llegan mientras lee se
+    /// acumulan en `prefetchPending`, en vez de crear una tarea GCD por cada página del disco.
+    private func runPrefetchWorker() {
+        while true {
+            lock.lock()
+            guard let index = prefetchPending.min() else {
+                prefetchWorkerActive = false
+                lock.unlock()
+                return
+            }
+            prefetchPending.remove(index)
+            let alreadyAvailable = cache[index] != nil || inFlight.contains(index)
+            lock.unlock()
+
+            if !alreadyAvailable { _ = page(index) }
         }
     }
 
@@ -193,11 +218,48 @@ public final class DiskReader: @unchecked Sendable {
         var pos = offset
         let end = min(size, offset + length)
         while pos < end {
-            let chunk = bytes(at: pos, count: Int(min(Int64(pageSize), end - pos)))
+            let chunk = read(at: pos, count: Int(min(Int64(Self.transferChunk), end - pos)))
             guard !chunk.isEmpty else { break }
             try handle.write(contentsOf: chunk)
             pos += Int64(chunk.count)
         }
+    }
+
+    /// Tramo que se pide de una vez al extraer archivos. Leer 4 MB por llamada es bastante más
+    /// rápido en un dispositivo crudo que ir página a página por la caché.
+    public static let transferChunk = 4 << 20
+
+    /// Lectura para extraer archivos: una sola llamada al disco, sin pasar por la caché de páginas
+    /// (así no la ensucia ni compite por el candado). Si el disco da error en ese tramo, cae a la
+    /// ruta tolerante que rellena con ceros lo ilegible.
+    public func read(at offset: Int64, count: Int) -> [UInt8] {
+        guard offset >= 0, offset < size, count > 0 else { return [] }
+        return readDirect(at: offset, count: count) ?? bytes(at: offset, count: count)
+    }
+
+    /// Como `read`, pero directo a un `Data` sin copias intermedias: para cargar fotos enteras en
+    /// memoria. nil si el tramo no empieza en un sector o si el disco da error ahí.
+    public func data(at offset: Int64, count: Int) -> Data? {
+        let sector = Int64(sectorSize)
+        guard offset >= 0, count > 0, offset % sector == 0, offset + Int64(count) <= size else { return nil }
+        let padded = Int(min(size - offset, (Int64(count) + sector - 1) / sector * sector))
+        guard let buffer = malloc(padded) else { return nil }
+        var done = 0
+        while done < padded {
+            let n = pread(fd, buffer + done, padded - done, offset + Int64(done))
+            if n < 0 {
+                if errno == EINTR { continue }
+                free(buffer)
+                return nil
+            }
+            if n == 0 { break }
+            done += n
+        }
+        guard done >= count else {
+            free(buffer)
+            return nil
+        }
+        return Data(bytesNoCopy: buffer, count: count, deallocator: .free)
     }
 
     /// Lectura directa sin caché (alineada a sector). nil si hubo un error de E/S.
@@ -208,7 +270,9 @@ public final class DiskReader: @unchecked Sendable {
         var buffer = [UInt8](repeating: 0, count: Int(end - start))
         guard readFully(into: &buffer, range: 0..<buffer.count, at: start) else { return nil }
         let from = Int(offset - start)
-        return Array(buffer[from..<min(buffer.count, from + count)])
+        let to = min(buffer.count, from + count)
+        if from == 0, to == buffer.count { return buffer }
+        return Array(buffer[from..<to])
     }
 
     /// Lee un rango alineado; si hay errores de E/S reintenta por tramos y rellena con ceros

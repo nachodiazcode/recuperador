@@ -1,4 +1,3 @@
-import QuickLookThumbnailing
 import RecoveryCore
 import SwiftUI
 
@@ -25,7 +24,7 @@ struct ResultsView: View {
             } else {
                 NavigationSplitView {
                     Sidebar()
-                        .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 280)
+                        .navigationSplitViewColumnWidth(min: 220, ideal: 248, max: 310)
                 } detail: {
                     detail
                 }
@@ -37,128 +36,137 @@ struct ResultsView: View {
         }
         .sheet(isPresented: $showFilters) { filterSheet }
         .sheet(isPresented: $showDetails) { detailSheet }
-        .overlay(alignment: .bottom) {
-            if let message = model.recoverMessage {
-                Text(message)
-                    .font(.headline)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 12)
-                    .background(.thickMaterial, in: Capsule())
-                    .shadow(radius: 10)
-                    .padding(.bottom, 24)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
-        .animation(.snappy, value: model.recoverMessage)
+        .sheet(isPresented: $model.showRecoverAll) { RecoverAllSheet() }
+        .overlay(alignment: .bottom) { RecoverToast() }
     }
 
     private var detail: some View {
-        VStack(spacing: 0) {
-            ScanBanner()
-            SmartQueryBar()
-            Gallery(layout: layout)
+        let items = model.filtered
+        return VStack(spacing: 0) {
+            VStack(spacing: 0) {
+                ScanBanner()
+                workspaceControls(items)
+                SmartQueryBar()
+                Divider()
+            }
+            .background(.background)
+            .zIndex(1)
+            Gallery(layout: layout, items: items)
+                .clipped()
         }
-        .searchable(text: $model.search, placement: .toolbar, prompt: "Prueba: “el video más antiguo” o “fotos de febrero 2016”")
+        .modifier(WindowToolbarClearance())
+        .searchable(text: $model.search, placement: .toolbar, prompt: "Buscar archivos")
         .onSubmit(of: .search) { model.applySmartSelection() }
         .task(id: model.search) {
-            try? await Task.sleep(for: .milliseconds(450))
+            do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
             model.applySmartSelection()
         }
-        .safeAreaInset(edge: .bottom) { selectionBar }
+        .safeAreaInset(edge: .bottom) { SelectionBar(showDetails: $showDetails) }
         .toolbar { resultsToolbar }
     }
 
-    @ViewBuilder private var selectionBar: some View {
-        if width != .regular, !model.selection.isEmpty {
-            HStack(spacing: 12) {
-                Text(selectionTitle).lineLimit(1).truncationMode(.middle)
-                Spacer()
-                Button("Detalles") { showDetails = true }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-            }
-            .padding(.horizontal, width.pagePadding)
-            .padding(.vertical, 10)
-            .background(.bar)
-        }
-    }
-
-    private var selectionTitle: String {
-        if model.selection.count == 1, let name = model.focused?.name { return name }
-        return "\(model.selection.count) seleccionados"
-    }
-
     @ToolbarContentBuilder private var resultsToolbar: some ToolbarContent {
-        ToolbarItemGroup {
-            if width == .compact {
-                Button { showFilters = true } label: { Label("Filtros", systemImage: "line.3.horizontal.decrease.circle") }
-            }
-            Picker("Vista", selection: $layout) {
-                Image(systemName: "square.grid.2x2").tag(ResultLayout.gallery)
-                Image(systemName: "list.bullet").tag(ResultLayout.list)
-            }
-            .pickerStyle(.segmented)
-            .help("Galería o lista")
-
-            if width == .compact {
-                Menu {
-                    ForEach(SortOrder.allCases) { order in
-                        Button {
-                            model.sort = order
-                        } label: {
-                            if model.sort == order { Label(order.rawValue, systemImage: "checkmark") }
-                            else { Text(order.rawValue) }
-                        }
-                    }
-                } label: {
-                    Label("Ordenar", systemImage: "arrow.up.arrow.down")
-                }
-                .help("Ordenar por")
-            } else {
-                Picker("Ordenar", selection: $model.sort) {
-                    ForEach(SortOrder.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.menu)
-                .help("Ordenar por")
-            }
-
-            Button {
-                model.recover(model.selection.isEmpty ? model.filtered : model.selectedItems)
-            } label: {
-                if width == .compact {
-                    Image(systemName: "arrow.down.doc.fill")
-                } else {
-                    Label(recoverTitle, systemImage: "arrow.down.doc.fill")
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Palette.accent)
-            .disabled(model.filtered.isEmpty)
-            .help(recoverTitle)
-
+        ToolbarItem {
             Button {
                 if width == .regular { showInspector.toggle() } else { showDetails = true }
             } label: {
-                if width == .regular {
-                    Label("Detalles", systemImage: "sidebar.trailing")
-                } else {
-                    Image(systemName: "sidebar.trailing")
-                }
+                Label("Detalles", systemImage: "sidebar.trailing")
             }
-            .help("Detalles")
+            .help("Mostrar u ocultar los detalles del archivo")
         }
     }
 
-    private var recoverTitle: String {
-        let count = model.selection.isEmpty ? model.filtered.count : model.selection.count
-        if width == .regular, model.selection.isEmpty { return "Recuperar todo (\(count))" }
-        if width == .compact { return "Recuperar \(count)" }
-        return "Recuperar (\(count))"
+    private func workspaceControls(_ items: [Item]) -> some View {
+        let bytes = model.filteredBytes
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                resultCount(items.count, bytes: bytes)
+                Spacer(minLength: 8)
+                viewControls
+                recoverButton(items)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    resultCount(items.count, bytes: bytes)
+                    Spacer(minLength: 8)
+                    recoverButton(items)
+                }
+                viewControls
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 12)
+    }
+
+    private func resultCount(_ count: Int, bytes: Int64) -> some View {
+        ResultCount(count: count, bytes: bytes)
+    }
+
+    private var viewControls: some View {
+        let hasFilters = model.filter != .all || model.year != nil || model.onlyRecoverable
+            || model.hideSystemFiles || model.hideOverwritten
+        return HStack(spacing: 8) {
+            if hasFilters || !model.search.isEmpty {
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) { model.resetFilters() }
+                    Signals.play(.tap)
+                } label: {
+                    Label("Ver todos", systemImage: "xmark.circle.fill")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .background(Palette.accent.opacity(0.16), in: Capsule())
+                        .foregroundStyle(Palette.accent)
+                }
+                .buttonStyle(PressableStyle())
+                .transition(.scale.combined(with: .opacity))
+                .help("Quitar filtros y búsqueda activos")
+            }
+
+            Button { showFilters = true } label: {
+                Label("Filtros", systemImage: hasFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease")
+            }
+            .tint(hasFilters ? Palette.accent : nil)
+            .help(hasFilters ? "Cambiar filtros activos" : "Filtrar resultados")
+
+            if layout == .gallery {
+                CardSizeSlider()
+            }
+
+            Picker("Vista", selection: $layout) {
+                Image(systemName: "square.grid.2x2").accessibilityLabel("Galería").tag(ResultLayout.gallery)
+                Image(systemName: "list.bullet").accessibilityLabel("Lista").tag(ResultLayout.list)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .fixedSize()
+            .help("Galería o lista")
+
+            Menu {
+                ForEach(SortOrder.allCases) { order in
+                    Button {
+                        model.sort = order
+                    } label: {
+                        if model.sort == order { Label(order.rawValue, systemImage: "checkmark") }
+                        else { Text(order.rawValue) }
+                    }
+                }
+            } label: {
+                Label("Orden: \(model.sort.rawValue)", systemImage: "arrow.up.arrow.down")
+                    .labelStyle(.iconOnly)
+            }
+            .help("Ordenar por: \(model.sort.rawValue)")
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func recoverButton(_ items: [Item]) -> some View {
+        RecoverButton(noneVisible: items.isEmpty)
     }
 
     private var filterSheet: some View {
         NavigationStack {
-            Sidebar()
+            Sidebar(showNewScan: false)
                 .navigationTitle("Filtros")
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
@@ -171,7 +179,7 @@ struct ResultsView: View {
 
     private var detailSheet: some View {
         NavigationStack {
-            InspectorView()
+            InspectorView(belowWindowToolbar: false)
                 .navigationTitle("Detalles")
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
@@ -187,6 +195,8 @@ struct ResultsView: View {
 
 struct Sidebar: View {
     @EnvironmentObject var model: AppModel
+    @Namespace private var sidebarMotion
+    var showNewScan = true
 
     private func symbol(_ c: FileCategory) -> String {
         switch c {
@@ -200,84 +210,137 @@ struct Sidebar: View {
     }
 
     var body: some View {
-        List(selection: Binding(get: { model.filter }, set: { model.filter = $0 ?? .all })) {
-            Section {
-                HStack(spacing: 12) {
-                    Image(systemName: model.sourceSymbol).font(.title).foregroundStyle(Palette.accent)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(model.sourceName).font(.headline).lineLimit(1)
-                        Text(phaseText).font(.caption).foregroundStyle(.secondary)
+        let summary = model.sidebarSummary
+        VStack(spacing: 0) {
+            if showNewScan {
+                sourceHeader
+                Divider()
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    group("Biblioteca") {
+                        row("Todos", "square.grid.2x2.fill", .all,
+                            count: summary.counts[.all, default: 0],
+                            bytes: summary.bytes[.all, default: 0], tint: Palette.accent)
+                        row("Con nombre original", "character.textbox", .named,
+                            count: summary.counts[.named, default: 0],
+                            bytes: summary.bytes[.named, default: 0], tint: .green)
                     }
-                }
-                .padding(.vertical, 6)
-                .selectionDisabled()
-            }
-
-            Section("Biblioteca") {
-                row("Todos", "square.grid.2x2.fill", .all, tint: .accentColor)
-                row("Con nombre original", "character.textbox", .named, tint: .green)
-            }
-            Section("Tipos") {
-                ForEach(FileCategory.allCases, id: \.self) { c in
-                    row(c.rawValue, symbol(c), .category(c), tint: tint(c))
-                }
-            }
-            if !model.years.isEmpty {
-                Section("Año") {
-                    ForEach(model.years, id: \.year) { entry in
-                        Button {
-                            model.year = model.year == entry.year ? nil : entry.year
-                        } label: {
-                            HStack {
-                                Image(systemName: model.year == entry.year ? "checkmark.circle.fill" : "calendar")
-                                    .foregroundStyle(model.year == entry.year ? Palette.accent : .secondary)
-                                Text(String(entry.year))
-                                Spacer()
-                                Text("\(entry.count)").foregroundStyle(.secondary).monospacedDigit()
+                    group("Tipos") {
+                        ForEach(FileCategory.allCases, id: \.self) { c in
+                            row(c.rawValue, symbol(c), .category(c),
+                                count: summary.counts[.category(c), default: 0],
+                                bytes: summary.bytes[.category(c), default: 0], tint: tint(c))
+                        }
+                    }
+                    let years = summary.years
+                    if !years.isEmpty {
+                        group("Año") {
+                            ForEach(years, id: \.year) { entry in
+                                let selected = model.year == entry.year
+                                filterRow(String(entry.year), "calendar", count: entry.count,
+                                          tint: .secondary, selected: selected) {
+                                    model.year = selected ? nil : entry.year
+                                }
                             }
                         }
-                        .buttonStyle(.plain)
-                        .selectionDisabled()
                     }
-                }
-            }
-            Section("Estado") {
-                Toggle("Solo recuperables", isOn: $model.onlyRecoverable)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .selectionDisabled()
-                if model.hasEmbeddedResults {
-                    Toggle("Ocultar los que están dentro de otro", isOn: $model.hideEmbedded)
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                        .selectionDisabled()
-                }
-                Toggle("Ocultar probablemente sobrescritos", isOn: $model.hideOverwritten)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .selectionDisabled()
-            }
-            if !model.volumes.isEmpty {
-                Section("Volúmenes detectados") {
-                    ForEach(Array(model.volumes.enumerated()), id: \.offset) { _, v in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(v.name).lineLimit(1)
-                            Text(v.namesSupported ? "\(v.format) · con nombres" : "\(v.format) · solo escaneo profundo")
-                                .font(.caption).foregroundStyle(.secondary)
+                    group("Filtros de estado") {
+                        filterToggle("Ocultar archivos del sistema", isOn: $model.hideSystemFiles)
+                        filterToggle("Solo recuperables", isOn: $model.onlyRecoverable)
+                        if summary.hasEmbedded {
+                            filterToggle("Ocultar archivos incrustados", isOn: $model.hideEmbedded)
                         }
-                        .selectionDisabled()
+                        filterToggle("Ocultar posibles sobrescritos", isOn: $model.hideOverwritten)
+                    }
+                    if !model.volumes.isEmpty {
+                        group("Volúmenes detectados") {
+                            ForEach(Array(model.volumes.enumerated()), id: \.offset) { _, v in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(v.name).font(.callout.weight(.medium)).lineLimit(1)
+                                    Text(v.namesSupported ? "\(v.format) · con nombres" : "\(v.format) · escaneo profundo")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                            }
+                        }
                     }
                 }
+                .padding(12)
+            }
+            .clipped()
+            if showNewScan {
+                Divider()
+                VStack(spacing: 8) {
+                    if !model.items.isEmpty {
+                        Button { model.openRecoverAll() } label: {
+                            Label("Recuperar datos (\(Bytes.gigabytes(model.totalBytes)))",
+                                  systemImage: "externaldrive.fill.badge.arrow.down")
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(CompactGlowButtonStyle())
+                    }
+                    Button { model.newScan() } label: {
+                        Label("Nuevo escaneo", systemImage: "plus.circle").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(12)
             }
         }
-        .listStyle(.sidebar)
-        .safeAreaInset(edge: .bottom) {
-            Button { model.newScan() } label: {
-                Label("Nuevo escaneo", systemImage: "plus.circle").frame(maxWidth: .infinity)
+        .modifier(WindowToolbarClearance(enabled: showNewScan))
+    }
+
+    private var sourceHeader: some View {
+        HStack(spacing: 9) {
+            Image(systemName: model.sourceSymbol)
+                .foregroundStyle(Palette.accent)
+                .frame(width: 30, height: 30)
+                .background(Palette.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.sourceName)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(model.sourceName)
+                Text(phaseText).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
-            .controlSize(.large)
-            .padding(12)
+            Spacer(minLength: 0)
         }
+        .padding(12)
+    }
+
+    private func group<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
+                .padding(.horizontal, 8)
+                .padding(.bottom, 3)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func filterToggle(_ title: String, isOn: Binding<Bool>) -> some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityHidden(true)
+            Spacer(minLength: 0)
+            Toggle(title, isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
     }
 
     private func tint(_ c: FileCategory) -> Color {
@@ -291,15 +354,22 @@ struct Sidebar: View {
         }
     }
 
-    private func row(_ title: String, _ symbol: String, _ tag: SidebarFilter, tint: Color) -> some View {
-        HStack {
-            Label { Text(title) } icon: { Image(systemName: symbol).foregroundStyle(tint) }
-            Spacer()
-            Text("\(model.count(tag))")
-                .font(.callout.monospacedDigit())
-                .foregroundStyle(.secondary)
+    private func row(_ title: String, _ symbol: String, _ tag: SidebarFilter,
+                     count: Int, bytes: Int64 = 0, tint: Color) -> some View {
+        filterRow(title, symbol, count: count, bytes: bytes, tint: tint,
+                  pillID: model.year == nil ? "sidebarMain" : nil,
+                  selected: model.filter == tag) {
+            withAnimation(.snappy(duration: 0.22)) { model.filter = tag }
+            Signals.play(.tap)
         }
-        .tag(tag)
+    }
+
+    private func filterRow(_ title: String, _ symbol: String, count: Int, bytes: Int64 = 0, tint: Color,
+                           pillID: String? = nil, selected: Bool, action: @escaping () -> Void) -> some View {
+        SidebarRowButton(
+            title: title, symbol: symbol, count: count, bytes: bytes, tint: tint,
+            selected: selected, namespace: sidebarMotion, pillID: pillID, action: action
+        )
     }
 
     private var phaseText: String {
@@ -311,6 +381,70 @@ struct Sidebar: View {
         case let .failed(e): return e
         default: return ""
         }
+    }
+}
+
+private struct SidebarRowButton: View {
+    let title: String
+    let symbol: String
+    let count: Int
+    let bytes: Int64
+    let tint: Color
+    let selected: Bool
+    let namespace: Namespace.ID
+    let pillID: String?
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: symbol)
+                    .foregroundStyle(selected ? Palette.accent : tint)
+                    .frame(width: 16)
+                    .scaleEffect(hovering ? 1.1 : 1)
+                Text(title)
+                    .font(.callout.weight(selected ? .semibold : .regular))
+                    .foregroundStyle(.primary)
+                    .opacity(selected ? 1.0 : 0.88)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(count.formatted())
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(selected ? AnyShapeStyle(Palette.accent) : AnyShapeStyle(.secondary))
+                    if count > 0, bytes > 0 {
+                        Text(Bytes.format(bytes))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background {
+                if selected {
+                    if let pillID {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Palette.subtleSurface)
+                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Palette.borderStroke))
+                            .matchedGeometryEffect(id: pillID, in: namespace)
+                    } else {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Palette.subtleSurface)
+                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Palette.borderStroke))
+                    }
+                } else if hovering {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Palette.accent.opacity(0.06))
+                }
+            }
+            .contentShape(Rectangle())
+            .animation(.snappy(duration: 0.16), value: hovering)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
@@ -341,9 +475,6 @@ struct SmartQueryBar: View {
             Text("Entendí:").foregroundStyle(.secondary)
             if !stacked { chipRow(chips) }
             Spacer(minLength: 8)
-            Text("\(model.filtered.count) resultado\(model.filtered.count == 1 ? "" : "s")")
-                .foregroundStyle(.secondary).monospacedDigit()
-                .lineLimit(1)
             Button { model.search = "" } label: { Image(systemName: "xmark.circle.fill") }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
@@ -372,145 +503,132 @@ struct SmartQueryBar: View {
 
 struct ScanBanner: View {
     @EnvironmentObject var model: AppModel
-    @Environment(\.widthClass) private var width
+    @EnvironmentObject var live: LiveStatus
 
     var body: some View {
-        if model.phase.isScanning || model.phase == .finished || model.phase == .cancelled {
-            ViewThatFits(in: .horizontal) {
-                banner(wide: true)
-                banner(wide: false)
-            }
-            .padding(.horizontal, width == .compact ? 16 : 24)
-            .padding(.vertical, width == .compact ? 12 : 14)
-            .background(.bar)
-            .overlay(alignment: .bottom) { Divider() }
-        }
-    }
-
-    private func banner(wide: Bool) -> some View {
-        let copy = VStack(alignment: .leading, spacing: 6) {
-            if wide {
-                Text(title).font(.headline).fixedSize(horizontal: false, vertical: true)
-            }
-            if model.phase == .deep, let p = model.progress {
-                ShimmerBar(value: p.fraction, active: true).frame(maxWidth: wide ? 460 : .infinity)
-            }
-            Text(subtitle).font(wide ? .callout : .caption).foregroundStyle(.secondary).monospacedDigit()
-                .fixedSize(horizontal: false, vertical: true)
-            counts
-            filterLine(inlinePending: wide)
-        }
-        return Group {
-            if wide {
-                HStack(alignment: .center, spacing: 16) {
-                    icon
-                    copy.frame(maxWidth: .infinity, alignment: .leading)
-                    stopButton
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 11) {
+                Image(systemName: model.sourceSymbol)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 38, height: 38)
+                    .background(Palette.gradient, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .shadow(color: Palette.accent.opacity(0.32), radius: 7, y: 2)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(model.sourceName.isEmpty ? "Escaneo" : model.sourceName)
+                        .font(.system(size: 17, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .accessibilityAddTraits(.isHeader)
+                    Label(title, systemImage: phaseSymbol)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .symbolEffect(.pulse, isActive: model.phase.isScanning)
                 }
-            } else {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .center, spacing: 12) {
-                        icon
-                        Text(title).font(.headline).fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        stopButton
-                    }
-                    copy
-                }
-            }
-        }
-    }
-
-    private func filterLine(inlinePending: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .top, spacing: 6) {
-                Image(systemName: "line.3.horizontal.decrease.circle")
-                Text("Buscando: \(model.scanFilter.summary)")
-                    .fixedSize(horizontal: false, vertical: true)
-                if model.pendingCount > 0, inlinePending {
-                    Text("· analizando fechas de \(model.pendingCount) archivo(s)…")
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            if model.pendingCount > 0, !inlinePending {
-                Text("Analizando fechas de \(model.pendingCount) archivo(s)…")
-            }
-        }
-        .font(.caption).foregroundStyle(.tertiary)
-    }
-
-    @ViewBuilder private var stopButton: some View {
-        if model.phase.isScanning {
-            Button(role: .destructive) { model.stop() } label: {
-                if width == .compact {
-                    Image(systemName: "stop.fill")
+                .layoutPriority(1)
+                Spacer(minLength: 6)
+                if model.phase.isScanning {
+                    Button { model.stop() } label: { Label("Detener", systemImage: "stop.fill") }
+                        .help("Detener el escaneo")
                 } else {
-                    Label("Detener", systemImage: "stop.fill")
+                    VStack(alignment: .trailing, spacing: 3) {
+                        HStack(alignment: .firstTextBaseline, spacing: 5) {
+                            Text(model.items.count.formatted())
+                                .font(.system(size: 19, weight: .semibold, design: .rounded))
+                                .monospacedDigit()
+                                .contentTransition(.numericText())
+                            Text("encontrados")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if model.totalBytes > 0 {
+                            Button {
+                                model.openRecoverAll()
+                            } label: {
+                                Label(Bytes.gigabytesDetailed(model.totalBytes), systemImage: "scalemass.fill")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Palette.accent)
+                                    .monospacedDigit()
+                                    .contentTransition(.numericText())
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Ver desglose en gigas (GB) y formas de recuperar")
+                        }
+                    }
                 }
             }
-            .controlSize(width == .compact ? .regular : .large)
-            .help("Detener")
+            if model.phase == .deep, let progress = live.progress {
+                ShimmerBar(value: progress.fraction, active: true, height: 8)
+                    .accessibilityLabel("Avance del escaneo profundo")
+                if let reading = readingSummary {
+                    Text(reading)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+            if case let .failed(message) = model.phase {
+                Text(message).font(.caption).foregroundStyle(.secondary)
+            } else {
+                Label("Búsqueda: \(model.scanFilter.summary)", systemImage: "line.3.horizontal.decrease")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            if live.badSectors > 0 {
+                Label("\(live.badSectors.formatted()) sectores ilegibles", systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if model.phase.isScanning, !model.items.isEmpty {
+                Text("\(model.items.count == 1 ? "1 archivo encontrado" : "\(model.items.count.formatted()) archivos encontrados") · \(Bytes.gigabytesDetailed(model.totalBytes))")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Palette.accent)
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+            }
+            let pending = model.pendingCount
+            if pending > 0 {
+                Text(pending == 1 ? "1 archivo pendiente de comprobar por fecha"
+                     : "\(pending.formatted()) archivos pendientes de comprobar por fecha")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
+        .padding(12)
+        .background(Palette.subtleSurface, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 13, style: .continuous).strokeBorder(Palette.borderStroke) }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 
-    @ViewBuilder private var icon: some View {
+    private var phaseSymbol: String {
         switch model.phase {
-        case .finished:
-            Image(systemName: "checkmark.circle.fill").font(.system(size: 30)).foregroundStyle(.green)
-                .symbolEffect(.bounce, value: model.phase)
-        case .cancelled:
-            Image(systemName: "pause.circle.fill").font(.system(size: 30)).foregroundStyle(.orange)
-        default:
-            AppBadge(size: 34)
+        case .finished: return "checkmark.circle"
+        case .cancelled: return "stop.circle"
+        case .failed: return "exclamationmark.circle"
+        default: return "magnifyingglass"
         }
     }
 
     private var title: String {
         switch model.phase {
-        case .quick: return "Buscando archivos borrados con su nombre…"
-        case .deep: return "Escaneo profundo · \(Int((model.progress?.fraction ?? 0) * 100))% · \(model.items.count) archivos"
-        case .finished: return "Escaneo completo: \(model.items.count) archivos encontrados"
-        case .cancelled: return "Escaneo detenido: \(model.items.count) archivos encontrados"
+        case .quick: return "Buscando nombres originales"
+        case .deep: return "Escaneo profundo"
+        case .finished: return "Escaneo completo"
+        case .cancelled: return "Escaneo detenido"
+        case .failed: return "No se pudo escanear"
         default: return ""
         }
     }
 
-    private var subtitle: String {
+    private var readingSummary: String? {
+        guard let p = live.progress else { return nil }
         let fmt = { (b: Int64) in ByteCountFormatter.string(fromByteCount: b, countStyle: .file) }
-        guard let p = model.progress else {
-            return model.phase == .quick ? "En FAT y exFAT son segundos. En NTFS hay que leer el índice entero." : "Puedes revisar y recuperar mientras sigue buscando"
-        }
-        let damage = model.badSectors > 0 ? " · \(model.badSectors) sectores ilegibles" : ""
-        if model.phase != .deep { return "Se revisaron \(fmt(p.scanned)) en \(Analyzer.formatDuration(p.elapsed))\(damage)" }
-        let remaining = p.bytesPerSecond > 0 ? Double(p.total - p.scanned) / p.bytesPerSecond : 0
-        return "\(fmt(p.scanned)) de \(fmt(p.total)) · \(fmt(Int64(p.bytesPerSecond)))/s · quedan ~\(Analyzer.formatDuration(remaining))\(damage)"
-    }
-
-    private var counts: some View {
-        let c = model.libraryCounts
-        return FlowLayout(spacing: 8) {
-            CountPill(value: c.shown, label: "en pantalla", tint: Palette.accent)
-            CountPill(value: c.named, label: "con nombre", tint: .green)
-            CountPill(value: c.recoverable, label: "recuperables", tint: .green)
-            if c.review > 0 { CountPill(value: c.review, label: "a revisar", tint: .orange) }
-        }
-    }
-}
-
-private struct CountPill: View {
-    let value: Int
-    let label: String
-    let tint: Color
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Text("\(value)").font(.caption.weight(.semibold).monospacedDigit())
-            Text(label).font(.caption)
-        }
-        .foregroundStyle(tint)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(tint.opacity(0.12), in: Capsule())
+        let read = "\(fmt(p.scanned)) de \(fmt(p.total))"
+        guard p.bytesPerSecond > 0 else { return read }
+        let remaining = Double(max(0, p.total - p.scanned)) / p.bytesPerSecond
+        return "\(read) · \(fmt(Int64(p.bytesPerSecond)))/s · ~\(Analyzer.formatDuration(remaining)) restantes"
     }
 }
 
@@ -520,17 +638,22 @@ struct Gallery: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.widthClass) private var width
     var layout: ResultLayout
+    let items: [Item]
+    @FocusState private var focused: Bool
+    @State private var perRow = 4
+    /// Tamaño de las tarjetas (deslizador, pellizco en el trackpad o ⌘+ / ⌘−).
+    @AppStorage("tamano") private var cardSize = CardSize.standard
+    @State private var pinchStart: Double?
 
     private var columns: [GridItem] {
         switch width {
-        case .compact: return [GridItem(.adaptive(minimum: 150), spacing: 12)]
-        case .medium: return [GridItem(.adaptive(minimum: 168, maximum: 220), spacing: 16)]
-        case .regular: return [GridItem(.adaptive(minimum: 178, maximum: 178), spacing: 18)]
+        case .compact: return [GridItem(.adaptive(minimum: min(150, cardSize)), spacing: 12)]
+        case .medium: return [GridItem(.adaptive(minimum: cardSize * 0.94, maximum: cardSize * 1.24), spacing: 16)]
+        case .regular: return [GridItem(.adaptive(minimum: cardSize, maximum: cardSize), spacing: 18)]
         }
     }
 
     var body: some View {
-        let items = model.filtered
         Group {
             if layout == .list, width == .compact {
                 CompactResultList(items: items)
@@ -541,28 +664,89 @@ struct Gallery: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(ThemedBackground())
+        .background(.background)
         .overlay { empty(items) }
     }
 
     private func gallery(_ items: [Item]) -> some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 22) {
-                ForEach(items) { item in
-                    ItemCell(item: item, selected: model.selection.contains(item.id))
-                        .hoverLift(1.04)
-                        .onTapGesture { model.tap(item) }
-                        .transition(.scale(scale: 0.85).combined(with: .opacity))
-                        .contextMenu {
-                            Button("Recuperar…") { model.recover([item]) }
-                            if let url = item.localURL {
-                                Button("Abrir vista previa") { NSWorkspace.shared.open(url) }
+        let padding: CGFloat = width == .compact ? 12 : 24
+        return ScrollViewReader { proxy in
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 22) {
+                    ForEach(items) { item in
+                        ItemCell(item: item,
+                                 onPreview: {
+                                     model.select([item.id])
+                                     model.viewerOpen = true
+                                 },
+                                 onRecover: { model.recover([item]) })
+                            .onTapGesture {
+                                // Un solo gesto: el clic selecciona al instante (sin esperar a ver si
+                                // viene un segundo) y el segundo clic de un doble clic abre el visor.
+                                focused = true
+                                let click = NSApp.currentEvent
+                                if (click?.clickCount ?? 1) >= 2, (click?.modifierFlags ?? []).isDisjoint(with: [.command, .shift]) {
+                                    model.select([item.id])
+                                    model.viewerOpen = true
+                                } else {
+                                    model.tap(item)
+                                }
                             }
-                        }
+                            .contextMenu {
+                                Button("Vista previa") {
+                                    model.select([item.id])
+                                    model.viewerOpen = true
+                                }
+                                Button("Recuperar…") { model.recover([item]) }
+                                Button("Abrir con macOS") { model.openExternally(item) }
+                            }
+                    }
                 }
+                .padding(padding)
             }
-            .padding(width == .compact ? 12 : 24)
-            .animation(.spring(response: 0.45, dampingFraction: 0.8), value: items.map(\.id))
+            .onGeometryChange(for: Int.self, of: { geo in
+                // Cuántas tarjetas caben por fila, para que ↑ y ↓ salten una fila exacta.
+                let (minimum, spacing): (CGFloat, CGFloat) = width == .compact ? (min(150, cardSize), 12)
+                    : width == .medium ? (cardSize * 0.94, 16) : (cardSize, 18)
+                return max(1, Int((geo.size.width - padding * 2 + spacing) / (minimum + spacing)))
+            }) { perRow = $0 }
+            .simultaneousGesture(
+                MagnifyGesture()
+                    .onChanged { value in
+                        let start = pinchStart ?? cardSize
+                        pinchStart = start
+                        let next = CardSize.clamp(start * value.magnification)
+                        // De a pasos: rearmar la grilla en cada cuadro del pellizco no hace falta.
+                        if abs(next - cardSize) >= 4 { cardSize = next }
+                    }
+                    .onEnded { _ in pinchStart = nil }
+            )
+            .focusable()
+            .focusEffectDisabled()
+            .focused($focused)
+            .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow], phases: [.down, .repeat]) { press in
+                let delta: Int
+                switch press.key {
+                case .leftArrow: delta = -1
+                case .rightArrow: delta = 1
+                case .upArrow: delta = -perRow
+                default: delta = perRow
+                }
+                if let item = model.step(delta) { proxy.scrollTo(item.id) }
+                return .handled
+            }
+            .onKeyPress(keys: [.space, .return]) { _ in
+                guard model.focused != nil else { return .ignored }
+                model.viewerOpen = true
+                return .handled
+            }
+            .onKeyPress(keys: ["a"]) { press in
+                guard press.modifiers.contains(.command) else { return .ignored }
+                model.selectAll()
+                return .handled
+            }
+            .onAppear { focused = true }
+            .background(ReturnFocus(focused: $focused))
         }
     }
 
@@ -573,12 +757,20 @@ struct Gallery: View {
                                        description: Text("Los archivos aparecerán aquí a medida que se encuentren."))
             } else if !model.search.isEmpty {
                 ContentUnavailableView.search(text: model.search)
-            } else if model.phase == .finished || model.phase == .cancelled {
-                ContentUnavailableView("No apareció nada con estos filtros", systemImage: "externaldrive.badge.questionmark",
-                                       description: Text("Si el disco es un SSD, TRIM puede haber vaciado los datos al borrarlos. En un disco mecánico, un pendrive o una tarjeta, el escaneo completo revisa el espacio libre sector por sector."))
+            } else if !model.items.isEmpty {
+                ContentUnavailableView {
+                    Label("No hay resultados con estos filtros", systemImage: "line.3.horizontal.decrease.circle")
+                } description: {
+                    Text("Prueba otra categoría o quita los filtros activos para ver los \(model.items.count.formatted()) archivos encontrados.")
+                } actions: {
+                    Button("Mostrar todos los archivos") {
+                        withAnimation(.snappy) { model.resetFilters() }
+                    }
+                    .buttonStyle(CompactGlowButtonStyle())
+                }
             } else {
-                ContentUnavailableView("Nada por aquí", systemImage: "tray",
-                                       description: Text("No se encontraron archivos con estos filtros."))
+                ContentUnavailableView("No se encontraron archivos", systemImage: "externaldrive.badge.questionmark",
+                                       description: Text("Puedes iniciar otro escaneo y cambiar qué tipos de archivo buscas."))
             }
         }
     }
@@ -586,42 +778,48 @@ struct Gallery: View {
 
 struct ResultTable: View {
     @EnvironmentObject var model: AppModel
-    @Environment(\.widthClass) private var width
+    @EnvironmentObject var focus: Focus
+    @State private var hasRoomForMetadata = false
     let items: [Item]
 
     var body: some View {
-        if width == .regular { fullTable } else { shortTable }
+        Group {
+            if hasRoomForMetadata { fullTable } else { shortTable }
+        }
+        .onGeometryChange(for: Bool.self, of: { $0.size.width >= 800 }) { hasRoomForMetadata = $0 }
     }
 
     private var fullTable: some View {
-        Table(items, selection: $model.selection) {
-            fileColumn.width(min: 160, ideal: 360)
-            sizeColumn.width(min: 80, ideal: 100)
+        Table(items, selection: Binding(get: { focus.selection }, set: model.select)) {
+            fileColumn.width(min: 235, ideal: 360)
+            sizeColumn.width(min: 75, ideal: 85, max: 100)
             TableColumn("Fecha") { item in
                 Text(item.date?.formatted(date: .abbreviated, time: .omitted) ?? "—")
                     .foregroundStyle(.secondary)
             }
-            .width(min: 90, ideal: 120)
+            .width(min: 105, ideal: 116, max: 130)
             TableColumn("Origen") { item in
                 OriginLabel(item: item)
             }
-            .width(min: 110, ideal: 170)
-            stateColumn.width(min: 130, ideal: 180)
+            .width(min: 80, ideal: 96, max: 120)
+            stateColumn.width(min: 108, ideal: 114, max: 138)
         }
         .modifier(TableActions())
     }
 
     private var shortTable: some View {
-        Table(items, selection: $model.selection) {
-            fileColumn.width(min: 140, ideal: 280)
-            sizeColumn.width(min: 72, ideal: 90)
-            stateColumn.width(min: 72, ideal: 90)
+        Table(items, selection: Binding(get: { focus.selection }, set: model.select)) {
+            fileColumn.width(min: 165, ideal: 300)
+            sizeColumn.width(min: 70, ideal: 80, max: 96)
+            stateColumn.width(min: 102, ideal: 110, max: 126)
         }
         .modifier(TableActions())
     }
 
     private var fileColumn: TableColumn<Item, Never, FileNameCell, Text> {
-        TableColumn("Archivo") { item in FileNameCell(item: item) }
+        TableColumn("Archivo") { item in
+            FileNameCell(item: item)
+        }
     }
 
     private var sizeColumn: TableColumn<Item, Never, some View, Text> {
@@ -643,16 +841,24 @@ private struct TableActions: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .tableStyle(.inset(alternatesRowBackgrounds: true))
+            .tableStyle(.inset(alternatesRowBackgrounds: false))
             .contextMenu(forSelectionType: Int.self) { ids in
-                Button("Recuperar…") { model.recover(model.items(ids: ids)) }
-            } primaryAction: { ids in
-                guard let item = model.items(ids: ids).first else { return }
-                if let url = item.localURL {
-                    NSWorkspace.shared.open(url)
-                } else {
-                    model.prepare(item)
+                Button("Vista previa") {
+                    model.select(ids)
+                    model.viewerOpen = true
                 }
+                Button("Recuperar…") { model.recover(model.items(ids: ids)) }
+                if let item = model.items(ids: ids).first {
+                    Button("Abrir con macOS") { model.openExternally(item) }
+                }
+            } primaryAction: { ids in
+                model.select(ids)
+                if model.focused != nil { model.viewerOpen = true }
+            }
+            .onKeyPress(.space) {
+                guard model.focused != nil else { return .ignored }
+                model.viewerOpen = true
+                return .handled
             }
     }
 }
@@ -661,16 +867,55 @@ private struct FileNameCell: View {
     @ObservedObject var item: Item
 
     var body: some View {
-        HStack(spacing: 10) {
-            ThumbnailView(item: item)
-                .frame(width: 36, height: 36)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            VStack(alignment: .leading, spacing: 1) {
-                Text(item.name).lineLimit(1).truncationMode(.middle)
+        HStack(spacing: 9) {
+            RowThumbnail(item: item, size: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.name)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 if let folder = item.file.folder, folder != "/" {
-                    Text(folder).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(folder).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 }
             }
+        }
+        .padding(.vertical, 3)
+        .help(item.name)
+    }
+}
+
+struct ResultFileIcon: View {
+    let category: FileCategory
+    var size: CGFloat = 26
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: size * 0.48, weight: .medium))
+            .foregroundStyle(tint)
+            .frame(width: size, height: size)
+            .background(tint.opacity(0.13), in: RoundedRectangle(cornerRadius: size * 0.25))
+            .accessibilityHidden(true)
+    }
+
+    private var symbol: String {
+        switch category {
+        case .photo: return "photo"
+        case .video: return "film"
+        case .audio: return "waveform"
+        case .document: return "doc.text"
+        case .archive: return "archivebox"
+        case .other: return "doc"
+        }
+    }
+
+    private var tint: Color {
+        switch category {
+        case .photo: return .pink
+        case .video: return .purple
+        case .audio: return .orange
+        case .document: return .blue
+        case .archive: return .brown
+        case .other: return .secondary
         }
     }
 }
@@ -704,38 +949,42 @@ private struct OriginLabel: View {
 
 private struct HealthLabel: View {
     @ObservedObject var item: Item
-    @Environment(\.widthClass) private var width
 
     var body: some View {
         if let health = item.health {
             let (color, symbol) = HealthBadge.style(health)
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 Image(systemName: symbol).foregroundStyle(color)
-                if width == .regular {
-                    Text(HealthBadge.title(health)).foregroundStyle(color)
-                }
-                Text("\(health)%").foregroundStyle(.secondary).monospacedDigit()
+                Text("\(health)%").monospacedDigit()
             }
-            .font(.callout)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.primary)
+            .accessibilityLabel("\(HealthBadge.title(health)), \(health) por ciento")
+            .help(HealthBadge.title(health))
         } else {
-            Text(item.healthNote).font(.callout).foregroundStyle(.tertiary).lineLimit(1)
+            Text(item.preparing ? "Analizando…" : item.analyzed ? "No comprobable" : "Sin analizar")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .help(item.healthNote)
         }
     }
 }
 
 private struct CompactResultList: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var focus: Focus
     let items: [Item]
 
     var body: some View {
-        List(selection: $model.selection) {
+        List(selection: Binding(get: { focus.selection }, set: model.select)) {
             ForEach(items) { item in
                 CompactResultRow(item: item)
                     .tag(item.id)
                     .onTapGesture(count: 2) { open(item) }
                     .contextMenu {
                         Button("Recuperar…") { model.recover([item]) }
-                        if item.localURL != nil { Button("Abrir vista previa") { open(item) } }
+                        Button("Vista previa") { open(item) }
                     }
             }
         }
@@ -743,11 +992,8 @@ private struct CompactResultList: View {
     }
 
     private func open(_ item: Item) {
-        if let url = item.localURL {
-            NSWorkspace.shared.open(url)
-        } else {
-            model.prepare(item)
-        }
+        model.select([item.id])
+        model.viewerOpen = true
     }
 }
 
@@ -756,9 +1002,7 @@ private struct CompactResultRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            ThumbnailView(item: item)
-                .frame(width: 44, height: 44)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            RowThumbnail(item: item, size: 34)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.name).lineLimit(1).truncationMode(.middle)
                 HStack(spacing: 6) {
@@ -773,6 +1017,7 @@ private struct CompactResultRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
+            Spacer(minLength: 0)
         }
         .padding(.vertical, 2)
     }
@@ -780,7 +1025,10 @@ private struct CompactResultRow: View {
 
 struct ItemCell: View {
     @ObservedObject var item: Item
-    let selected: Bool
+    var onPreview: () -> Void = {}
+    var onRecover: () -> Void = {}
+    @State private var hovering = false
+    private var selected: Bool { item.isSelected }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -788,14 +1036,34 @@ struct ItemCell: View {
             Color.primary.opacity(0.06)
                 .aspectRatio(4 / 3, contentMode: .fit)
                 .frame(maxWidth: .infinity)
-                .overlay { ThumbnailView(item: item, fill: item.category == .photo || item.category == .video) }
+                .overlay {
+                    ThumbnailView(item: item, fill: item.category == .photo || item.category == .video)
+                        // Al pasar el puntero la imagen se acerca un poco dentro del marco.
+                        .scaleEffect(hovering ? 1.05 : 1)
+                }
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(alignment: .bottomTrailing) {
+                    if hovering {
+                        HStack(spacing: 6) {
+                            quickAction("eye.fill", help: "Vista previa (espacio)", action: onPreview)
+                            quickAction("arrow.down.to.line", help: "Recuperar este archivo", action: onRecover)
+                        }
+                        .padding(7)
+                        .transition(.opacity.combined(with: .scale(scale: 0.85, anchor: .bottomTrailing)))
+                    }
+                }
                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
                 .overlay(alignment: .topTrailing) { HealthBadge(health: item.health).padding(6) }
                 .overlay(alignment: .bottomLeading) {
                     if item.category == .video {
-                        Image(systemName: "play.circle.fill").font(.title2).foregroundStyle(.white).shadow(radius: 3).padding(6)
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 22, height: 22)
+                            .background(.black.opacity(0.55), in: Circle())
+                            .padding(6)
+                            .accessibilityHidden(true)
                     }
                 }
             Text(item.name)
@@ -818,11 +1086,56 @@ struct ItemCell: View {
         }
         .padding(6)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(selected ? Palette.accent.opacity(0.16) : .clear))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .strokeBorder(selected ? Palette.accent : .clear, lineWidth: 2))
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(selected ? AnyShapeStyle(Palette.subtleSurface) : AnyShapeStyle(hovering ? Palette.accent.opacity(0.06) : .clear))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(
+                    selected ? AnyShapeStyle(Palette.gradient) : AnyShapeStyle(hovering ? Palette.accent.opacity(0.28) : .clear),
+                    lineWidth: selected ? 2 : 1
+                )
+        )
+        .shadow(color: Palette.accent.opacity(selected ? 0.25 : (hovering ? 0.14 : 0)),
+                radius: selected ? 10 : (hovering ? 9 : 0),
+                y: hovering ? 4 : 2)
+        .offset(y: hovering ? -2.5 : 0)
         .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .animation(.spring(response: 0.22, dampingFraction: 0.78), value: hovering)
+        .animation(.snappy(duration: 0.16), value: selected)
+    }
+
+    private func quickAction(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
+        QuickActionCircle(symbol: symbol, help: help, action: action)
+    }
+}
+
+private struct QuickActionCircle: View {
+    let symbol: String
+    let help: String
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 27, height: 27)
+                .background(
+                    Circle().fill(hover ? AnyShapeStyle(Palette.gradient) : AnyShapeStyle(.black.opacity(0.65)))
+                )
+                .overlay(Circle().strokeBorder(.white.opacity(hover ? 0.5 : 0.25)))
+                .shadow(color: Palette.accent.opacity(hover ? 0.5 : 0), radius: 6, y: 2)
+                .scaleEffect(hover ? 1.08 : 1)
+                .contentShape(Circle())
+                .animation(.snappy(duration: 0.14), value: hover)
+        }
+        .buttonStyle(PressableStyle())
+        .onHover { hover = $0 }
+        .help(help)
     }
 }
 
@@ -851,7 +1164,8 @@ struct HealthBadge: View {
     }
 }
 
-/// Miniatura generada por Quick Look: funciona con fotos, videos, PDF, documentos de Office...
+/// Miniatura de un resultado. Se pide solo mientras la tarjeta está en pantalla: al salir,
+/// SwiftUI cancela la tarea y la lectura del disco no llega a hacerse.
 struct ThumbnailView: View {
     @ObservedObject var item: Item
     /// Llenar el recuadro (fotos, videos) o mostrar la miniatura entera (documentos).
@@ -859,63 +1173,318 @@ struct ThumbnailView: View {
     @State private var image: NSImage?
 
     var body: some View {
+        let shown = image ?? ThumbnailStore.shared.cached(item.id)
         ZStack {
-            if let image {
+            if let shown {
                 if fill {
-                    Image(nsImage: image).resizable().scaledToFill()
+                    Image(nsImage: shown).resizable().scaledToFill()
                 } else {
-                    Image(nsImage: image).resizable().scaledToFit()
+                    Image(nsImage: shown).resizable().scaledToFit()
                         .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
                         .padding(10)
                 }
             } else {
-                LinearGradient(colors: placeholderColors, startPoint: .topLeading, endPoint: .bottomTrailing)
-                VStack(spacing: 6) {
-                    Image(systemName: placeholderSymbol).font(.system(size: 34)).foregroundStyle(.white.opacity(0.9))
-                    Text(item.file.ext.uppercased()).font(.caption.weight(.bold)).foregroundStyle(.white.opacity(0.8))
+                VStack(spacing: 8) {
+                    ResultFileIcon(category: item.category, size: 40)
+                    if !item.file.ext.isEmpty {
+                        Text(item.file.ext.uppercased())
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityHidden(true)
             }
         }
-        .task(id: item.localURL) {
-            guard let url = item.localURL else { return }
-            image = await ThumbnailCache.shared.thumbnail(for: url)
-        }
-    }
-
-    private var placeholderSymbol: String {
-        switch item.category {
-        case .photo: return "photo"
-        case .video: return "film"
-        case .audio: return "waveform"
-        case .document: return "doc.richtext"
-        case .archive: return "doc.zipper"
-        case .other: return "doc"
-        }
-    }
-
-    private var placeholderColors: [Color] {
-        switch item.category {
-        case .photo: return [.pink, .orange]
-        case .video: return [.purple, .indigo]
-        case .audio: return [.orange, .red]
-        case .document: return [.blue, .cyan]
-        case .archive: return [.brown, .orange]
-        case .other: return [.gray, .secondary]
+        .animation(.easeOut(duration: 0.12), value: shown != nil)
+        // Cuando el archivo ya se extrajo se reintenta: algunos tipos solo tienen miniatura así.
+        .task(id: item.localURL != nil) {
+            guard image == nil else { return }
+            // Al desplazar rápido, las tarjetas que pasan de largo no llegan a leer el disco.
+            try? await Task.sleep(for: .milliseconds(50))
+            guard !Task.isCancelled else { return }
+            image = await ThumbnailStore.shared.thumbnail(for: item)
         }
     }
 }
 
-@MainActor
-final class ThumbnailCache {
-    static let shared = ThumbnailCache()
-    private let cache = NSCache<NSURL, NSImage>()
+/// Miniatura pequeña para las filas de la lista; si no hay, el ícono del tipo.
+struct RowThumbnail: View {
+    @ObservedObject var item: Item
+    let size: CGFloat
+    @State private var image: NSImage?
 
-    func thumbnail(for url: URL) async -> NSImage? {
-        if let hit = cache.object(forKey: url as NSURL) { return hit }
-        let request = QLThumbnailGenerator.Request(fileAt: url, size: CGSize(width: 340, height: 260),
-                                                   scale: 2, representationTypes: .thumbnail)
-        guard let rep = try? await QLThumbnailGenerator.shared.generateBestRepresentation(for: request) else { return nil }
-        cache.setObject(rep.nsImage, forKey: url as NSURL)
-        return rep.nsImage
+    var body: some View {
+        Group {
+            if let shown = image ?? ThumbnailStore.shared.cached(item.id) {
+                Image(nsImage: shown).resizable().scaledToFill()
+                    .frame(width: size, height: size)
+                    .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+                    .accessibilityHidden(true)
+            } else {
+                ResultFileIcon(category: item.category, size: size)
+            }
+        }
+        .task(id: item.localURL != nil) {
+            guard image == nil, item.category == .photo || item.category == .video else { return }
+            try? await Task.sleep(for: .milliseconds(80))
+            guard !Task.isCancelled else { return }
+            image = await ThumbnailStore.shared.thumbnail(for: item)
+        }
+    }
+}
+
+
+// MARK: - Piezas que dependen de la selección
+
+/// Devuelve el teclado a la galería al cerrar el visor. Es una vista vacía aparte para que la
+/// galería no tenga que observar la selección.
+private struct ReturnFocus: View {
+    @EnvironmentObject private var focus: Focus
+    var focused: FocusState<Bool>.Binding
+
+    var body: some View {
+        Color.clear
+            .onChange(of: focus.viewerOpen) { _, open in if !open { focused.wrappedValue = true } }
+    }
+}
+
+private struct ResultCount: View {
+    @EnvironmentObject private var focus: Focus
+    let count: Int
+    let bytes: Int64
+
+    var body: some View {
+        let selected = focus.selection.count
+        let subtitle: String = {
+            if selected == 0 {
+                let base = count == 1 ? "1 archivo visible" : "\(count.formatted()) archivos visibles"
+                return count > 0 ? "\(base) · \(Bytes.gigabytesDetailed(bytes))" : base
+            }
+            let base = selected == 1 ? "1 seleccionado" : "\(selected.formatted()) seleccionados"
+            return "\(base) · \(Bytes.gigabytesDetailed(focus.selectedBytes))"
+        }()
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Resultados").font(.headline).accessibilityAddTraits(.isHeader)
+            Text(subtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .contentTransition(.numericText())
+                .animation(.snappy(duration: 0.2), value: selected)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+private struct RecoverButton: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var focus: Focus
+    let noneVisible: Bool
+
+    var body: some View {
+        let hasSelection = !focus.selection.isEmpty
+        let hasFilter = model.filter != .all || model.year != nil || !model.search.isEmpty
+            || model.onlyRecoverable || model.hideSystemFiles || model.hideOverwritten
+        let totalGB = model.totalBytes > 0 ? " (\(Bytes.gigabytes(model.totalBytes)))" : ""
+
+        HStack(spacing: 8) {
+            if hasSelection {
+                Button {
+                    model.recoverResults()
+                } label: {
+                    Label("Recuperar selección (\(Bytes.gigabytes(focus.selectedBytes)))", systemImage: "arrow.down.doc.fill")
+                        .lineLimit(1)
+                }
+                .buttonStyle(.bordered)
+                .fixedSize()
+                .help("Recuperar directamente los archivos seleccionados")
+            } else if hasFilter, !noneVisible {
+                Button {
+                    model.recoverResults()
+                } label: {
+                    Label("Recuperar visibles (\(Bytes.gigabytes(model.filteredBytes)))", systemImage: "arrow.down.doc")
+                        .lineLimit(1)
+                }
+                .buttonStyle(.bordered)
+                .fixedSize()
+                .help("Recuperar los archivos visibles con el filtro actual")
+            }
+
+            Button {
+                model.openRecoverAll(mode: .all)
+            } label: {
+                Label("Recuperar datos\(totalGB)", systemImage: "externaldrive.fill.badge.arrow.down")
+                    .lineLimit(1)
+            }
+            .buttonStyle(CompactGlowButtonStyle())
+            .disabled(model.items.isEmpty)
+            .fixedSize()
+            .help("Ver cuántos gigas (GB) son y elegir entre distintas formas de recuperar")
+        }
+    }
+}
+
+private struct SelectionBar: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var focus: Focus
+    @Environment(\.widthClass) private var width
+    @Binding var showDetails: Bool
+
+    var body: some View {
+        if width != .regular, !focus.selection.isEmpty {
+            HStack(spacing: 12) {
+                Text(title).lineLimit(1).truncationMode(.middle)
+                Spacer()
+                Button("Detalles") { showDetails = true }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+            }
+            .padding(.horizontal, width.pagePadding)
+            .padding(.vertical, 10)
+            .background(.bar)
+        }
+    }
+
+    private var title: String {
+        if focus.selection.count == 1, let name = model.focused?.name { return name }
+        return "\(focus.selection.count.formatted()) seleccionados · \(Bytes.format(focus.selectedBytes))"
+    }
+}
+
+/// Avance de la recuperación: barra de progreso en bytes, velocidad, resultado y acceso a Finder.
+private struct RecoverToast: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var live: LiveStatus
+
+    var body: some View {
+        ZStack {
+            if let status = live.recover {
+                HStack(spacing: 12) {
+                    icon(status)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(title(status))
+                            .font(.headline)
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                        if !status.finished {
+                            ShimmerBar(value: fraction(status), active: true, height: 8)
+                                .frame(minWidth: 220, maxWidth: 320)
+                            Text(progressSubtitle(status))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                                .contentTransition(.numericText())
+                        } else if let sub = finishedSubtitle(status) {
+                            Text(sub)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                    }
+                    if !status.finished {
+                        Button("Detener") { model.stopRecovery() }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .help("Detener la recuperación conservando lo ya copiado")
+                    }
+                    if status.finished, let folder = status.folder {
+                        Button("Mostrar en Finder") { NSWorkspace.shared.activateFileViewerSelecting([folder]) }
+                            .buttonStyle(CompactGlowButtonStyle())
+                    }
+                    if status.finished {
+                        Button { live.recover = nil } label: { Image(systemName: "xmark") }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.secondary)
+                            .help("Cerrar")
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 13)
+                .background(.thickMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Palette.borderStroke, lineWidth: 1.2))
+                .shadow(color: Palette.accent.opacity(0.24), radius: 16, y: 6)
+                .padding(.bottom, 24)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy(duration: 0.25), value: live.recover?.finished)
+        .animation(.snappy(duration: 0.25), value: live.recover == nil)
+    }
+
+    private func fraction(_ status: RecoverStatus) -> Double {
+        if status.bytesTotal > 0 {
+            return min(1, max(0, Double(status.bytesDone) / Double(status.bytesTotal)))
+        }
+        return min(1, max(0, Double(status.done) / Double(max(1, status.total))))
+    }
+
+    private func progressSubtitle(_ status: RecoverStatus) -> String {
+        var parts = ["\(Bytes.gigabytes(status.bytesDone)) de \(Bytes.gigabytes(status.bytesTotal))"]
+        let speed = status.speed
+        if speed > 0 {
+            parts.append("\(Bytes.format(Int64(speed)))/s")
+            let remainingBytes = max(0, status.bytesTotal - status.bytesDone)
+            if remainingBytes > 0 {
+                parts.append("~\(Analyzer.formatDuration(Double(remainingBytes) / speed)) restantes")
+            }
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func finishedSubtitle(_ status: RecoverStatus) -> String? {
+        var parts: [String] = []
+        if status.bytesDone > 0 { parts.append(Bytes.gigabytesDetailed(status.bytesDone)) }
+        if let reason = status.stopReason { parts.append(reason) }
+        if status.failed > 0 { parts.append("\(status.failed.formatted()) no se pudieron copiar") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder private func icon(_ status: RecoverStatus) -> some View {
+        let problem = status.failed > 0 || status.stopped
+        Image(systemName: !status.finished ? "arrow.down.circle" : !problem ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+            .font(.title2)
+            .foregroundStyle(!status.finished ? Palette.accent : !problem ? .green : .orange)
+            .contentTransition(.symbolEffect(.replace))
+            .symbolEffect(.bounce, value: status.finished)
+    }
+
+    private func title(_ status: RecoverStatus) -> String {
+        guard status.finished else {
+            return "Recuperando \(status.done.formatted()) de \(status.total.formatted())…"
+        }
+        let ok = max(0, status.done - status.failed)
+        if status.stopped {
+            return "Detenido · \(ok.formatted()) recuperados"
+        }
+        return ok == 1 ? "1 archivo recuperado" : "\(ok.formatted()) archivos recuperados"
+    }
+}
+
+
+// MARK: - Tamaño de las tarjetas
+
+enum CardSize {
+    static let standard = 178.0
+    static let range = 128.0...260.0
+    static func clamp(_ value: Double) -> Double { min(range.upperBound, max(range.lowerBound, value)) }
+}
+
+private struct CardSizeSlider: View {
+    @AppStorage("tamano") private var cardSize = CardSize.standard
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "photo").font(.system(size: 9))
+            Slider(value: $cardSize, in: CardSize.range)
+                .controlSize(.mini)
+                .frame(width: 80)
+            Image(systemName: "photo").font(.system(size: 13))
+        }
+        .foregroundStyle(.secondary)
+        .help("Tamaño de las miniaturas (⌘+ / ⌘−, o pellizca en el trackpad)")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Tamaño de las miniaturas")
     }
 }

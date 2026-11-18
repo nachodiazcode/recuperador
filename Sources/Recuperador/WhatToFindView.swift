@@ -13,13 +13,24 @@ struct WhatToFindView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 12) {
-                HStack {
+                HStack(spacing: 12) {
                     Text("Tipos de archivo").font(.headline)
                     Spacer()
-                    Button("Todos") { filter.chips = Set(TypeCatalog.allChips.map(\.label)) }
-                    Button("Ninguno") { filter.chips = [] }
+                    Button("Todos") {
+                        withAnimation(.snappy(duration: 0.2)) {
+                            filter.chips = Set(TypeCatalog.allChips.map(\.label))
+                        }
+                        Signals.play(.tap)
+                    }
+                    Button("Ninguno") {
+                        withAnimation(.snappy(duration: 0.2)) {
+                            filter.chips = []
+                        }
+                        Signals.play(.tap)
+                    }
                 }
                 .buttonStyle(.borderless)
+                .foregroundStyle(Palette.accent)
 
                 ForEach(TypeCatalog.groups, id: \.category) { group in
                     CategoryRow(category: group.category, chips: group.chips, selected: $filter.chips)
@@ -49,7 +60,7 @@ struct WhatToFindView: View {
         }
         .padding(20)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Palette.accent.opacity(0.16)))
     }
 
     private var dateBlock: some View {
@@ -111,13 +122,21 @@ struct WhatToFindView: View {
 
     private func preset(_ title: String, _ from: Int?, _ to: Int?) -> some View {
         let active = filter.fromYear == from && filter.toYear == to
-        return Button(title) {
-            filter.fromYear = from
-            filter.toYear = to
+        return Button {
+            withAnimation(.snappy(duration: 0.18)) {
+                filter.fromYear = from
+                filter.toYear = to
+            }
+        } label: {
+            Text(title)
+                .font(.caption.weight(active ? .semibold : .regular))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(active ? Palette.accent.opacity(0.2) : Color.primary.opacity(0.05), in: Capsule())
+                .overlay(Capsule().strokeBorder(active ? Palette.accent.opacity(0.6) : .clear))
+                .foregroundStyle(active ? Palette.accent : .secondary)
         }
-        .buttonStyle(.bordered)
-        .tint(active ? .accentColor : nil)
-        .controlSize(.small)
+        .buttonStyle(PressableStyle())
     }
 }
 
@@ -140,7 +159,7 @@ private struct CategoryRow: View {
             }
         } else {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
-                categoryButton.frame(width: 130, alignment: .leading)
+                categoryButton.frame(width: 134, alignment: .leading)
                 chipCloud
             }
         }
@@ -148,11 +167,15 @@ private struct CategoryRow: View {
 
     private var categoryButton: some View {
         Button {
-            if allOn { selected.subtract(labels) } else { selected.formUnion(labels) }
+            withAnimation(.snappy(duration: 0.18)) {
+                if allOn { selected.subtract(labels) } else { selected.formUnion(labels) }
+            }
+            Signals.play(.tap)
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: allOn ? "checkmark.square.fill" : someOn ? "minus.square.fill" : "square")
                     .foregroundStyle(someOn ? Palette.accent : .secondary)
+                    .contentTransition(.symbolEffect(.replace))
                 Text(category.rawValue).fontWeight(.medium)
             }
         }
@@ -162,24 +185,56 @@ private struct CategoryRow: View {
     private var chipCloud: some View {
         FlowLayout(spacing: 6) {
             ForEach(chips) { chip in
-                let on = selected.contains(chip.label)
-                Button {
-                    if on { selected.remove(chip.label) } else { selected.insert(chip.label) }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(chip.label)
-                        if !chip.deepScannable { Circle().fill(.orange).frame(width: 5, height: 5) }
+                ChipPill(chip: chip, on: selected.contains(chip.label)) {
+                    withAnimation(.snappy(duration: 0.18)) {
+                        if selected.contains(chip.label) {
+                            selected.remove(chip.label)
+                        } else {
+                            selected.insert(chip.label)
+                        }
                     }
-                    .font(.callout.weight(on ? .semibold : .regular))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(on ? Palette.accent.opacity(0.18) : Color.primary.opacity(0.05), in: Capsule())
-                    .overlay(Capsule().strokeBorder(on ? Palette.accent.opacity(0.6) : .clear))
-                    .foregroundStyle(on ? Palette.accent : .secondary)
                 }
-                .buttonStyle(.plain)
-                .help(chip.extensions.filter { $0 != "*" }.map { ".\($0)" }.joined(separator: " "))
             }
         }
+    }
+}
+
+private struct ChipPill: View {
+    let chip: TypeChip
+    let on: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Text(chip.label)
+                if !chip.deepScannable { Circle().fill(.orange).frame(width: 5, height: 5) }
+            }
+            .font(.callout.weight(on ? .semibold : .regular))
+            .padding(.horizontal, 11)
+            .padding(.vertical, 4)
+            .background(
+                Capsule().fill(
+                    on
+                        ? AnyShapeStyle(LinearGradient(colors: [Palette.accent.opacity(0.24), Palette.secondary.opacity(0.18)],
+                                                       startPoint: .topLeading, endPoint: .bottomTrailing))
+                        : AnyShapeStyle(Color.primary.opacity(hovering ? 0.09 : 0.05))
+                )
+            )
+            .overlay(
+                Capsule().strokeBorder(
+                    on ? Palette.accent.opacity(0.72) : (hovering ? Palette.accent.opacity(0.3) : .clear),
+                    lineWidth: 1
+                )
+            )
+            .foregroundStyle(on ? Palette.accent : .secondary)
+            .scaleEffect(hovering ? 1.03 : 1)
+            .animation(.snappy(duration: 0.15), value: hovering)
+            .animation(.snappy(duration: 0.16), value: on)
+        }
+        .buttonStyle(PressableStyle())
+        .onHover { hovering = $0 }
+        .help(chip.extensions.filter { $0 != "*" }.map { ".\($0)" }.joined(separator: " "))
     }
 }

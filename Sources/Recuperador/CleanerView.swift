@@ -50,7 +50,7 @@ struct CleanerView: View {
         }
         .background(ThemedBackground())
         .onAppear {
-            withAnimation(.spring(response: 0.7, dampingFraction: 0.85).delay(0.05)) { appeared = true }
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.9)) { appeared = true }
             if cleaner.state == .idle { cleaner.measure(excludingRecuperador: model.phase.isScanning) }
         }
     }
@@ -209,7 +209,7 @@ struct CleanerView: View {
                     if cleaner.selected.contains(target.id) { cleaner.selected.remove(target.id) } else { cleaner.selected.insert(target.id) }
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
-                .animation(.spring(response: 0.5, dampingFraction: 0.8).delay(Double(index) * 0.06), value: cleaner.targets.count)
+                .animation(.spring(response: 0.3, dampingFraction: 0.85).delay(Double(index) * 0.02), value: cleaner.targets.count)
             }
             Label("No se toca la Papelera ni tus documentos: ahí puede haber archivos que quieras recuperar.",
                   systemImage: "lock.shield.fill")

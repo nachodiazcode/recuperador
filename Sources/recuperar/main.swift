@@ -384,7 +384,7 @@ case "escanear":
             print(String(format: "\r  %5.1f%%  %@ / %@  %@/s  encontrados: %d   ",
                          p.fraction * 100, human(p.scanned), human(p.total), human(Int64(p.bytesPerSecond)), p.found), terminator: "")
             fflush(stdout)
-        }, onFound: keep)
+        }, onFound: keep, collectResults: false)
         print("\n")
     }
     try? report?.close()

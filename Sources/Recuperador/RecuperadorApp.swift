@@ -4,6 +4,7 @@ import SwiftUI
 @main
 struct RecuperadorApp: App {
     @StateObject private var model = AppModel()
+    @AppStorage("tamano") private var cardSize = CardSize.standard
 
     init() {
         NSApplication.shared.setActivationPolicy(.regular)
@@ -13,6 +14,8 @@ struct RecuperadorApp: App {
         Window("Recuperador", id: "main") {
             RootView()
                 .environmentObject(model)
+                .environmentObject(model.focus)
+                .environmentObject(model.live)
                 .frame(minWidth: 390, minHeight: 560)
                 .onAppear {
                     Signals.prepare()
@@ -37,14 +40,27 @@ struct RecuperadorApp: App {
                     .keyboardShortcut("n")
                 Button("Abrir imagen de disco…") { model.openImage(deep: true) }
                     .keyboardShortcut("o")
-                Button("Recuperar") {
-                    model.recover(model.selection.isEmpty ? model.filtered : model.selectedItems)
+                Button("Recuperar selección o visibles…") {
+                    model.recoverResults()
                 }
                 .keyboardShortcut("r")
-                .disabled(model.filtered.isEmpty)
+                .disabled(!model.hasVisibleResults)
+                Button("Recuperar datos…") {
+                    model.openRecoverAll()
+                }
+                .keyboardShortcut("r", modifiers: [.command, .option])
+                .disabled(model.items.isEmpty)
                 Button("Detener escaneo") { model.stop() }
                     .keyboardShortcut(".")
                     .disabled(!model.phase.isScanning)
+            }
+            CommandGroup(after: .toolbar) {
+                Button("Miniaturas más grandes") { cardSize = CardSize.clamp(cardSize * 1.15) }
+                    .keyboardShortcut("+")
+                Button("Miniaturas más chicas") { cardSize = CardSize.clamp(cardSize / 1.15) }
+                    .keyboardShortcut("-")
+                Button("Tamaño normal de miniaturas") { cardSize = CardSize.standard }
+                    .keyboardShortcut("0")
             }
         }
     }
@@ -76,27 +92,16 @@ struct RootView: View {
             }
             Group {
                 switch section {
-                case .clean:
-                    CleanerView()
-                        .transition(.asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .leading)).combined(with: .opacity))
-                case .recover:
-                    Group {
-                        if model.phase == .idle || model.phase == .opening {
-                            WelcomeView()
-                        } else {
-                            ResultsView()
-                        }
-                    }
-                    .transition(.asymmetric(insertion: .move(edge: .leading), removal: .move(edge: .trailing)).combined(with: .opacity))
+                case .recover: RecoverSection()
+                case .clean: CleanerView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .id(theme)
         .tint(Palette.accent)
-        .preferredColorScheme(theme == .ironMan ? .dark : nil)
-        .animation(.spring(response: 0.5, dampingFraction: 0.85), value: section)
-        .animation(.smooth, value: model.phase == .idle)
+        .preferredColorScheme(theme.forcesDark ? .dark : nil)
+
         .modifier(WidthClassReader(widthClass: $widthClass))
         .toolbar {
             ToolbarItem(placement: .principal) {
@@ -104,19 +109,24 @@ struct RootView: View {
             }
             ToolbarItem(placement: .navigation) {
                 Menu {
-                    Picker("Tema", selection: $theme.animation(.easeInOut(duration: 0.4))) {
-                        ForEach(ThemeChoice.allCases) { Text($0.rawValue).tag($0) }
+                    // Sin animación SwiftUI: el tema reconstruye toda la interfaz con Crossfade.
+                    Picker("Tema", selection: $theme) {
+                        ForEach(ThemeChoice.allCases) { choice in
+                            Label(choice.label, systemImage: choice.symbol).tag(choice)
+                        }
                     }
                     .pickerStyle(.inline)
                     Divider()
                     Toggle("Sonidos", isOn: $sounds)
                     Toggle("Avisos", isOn: $notices)
                 } label: {
-                    Label("Tema", systemImage: theme == .ironMan ? "bolt.circle.fill" : "paintpalette.fill")
+                    Label("Tema", systemImage: theme.symbol)
+                        .foregroundStyle(Palette.accent)
                 }
-                .help("Tema, sonidos y avisos")
+                .help("Tema (\(theme.label)), sonidos y avisos")
             }
         }
+        .onChange(of: theme) { Crossfade.next(0.3) }
         .onChange(of: sounds) { _, enabled in
             if enabled { Signals.play(.rise) }
         }
@@ -126,9 +136,38 @@ struct RootView: View {
     }
 
     private var sectionPicker: some View {
-        Picker("Sección", selection: $section) {
+        Picker("Sección", selection: Binding(get: { section }, set: { next in
+            guard next != section else { return }
+            Crossfade.next()
+            section = next
+        })) {
             ForEach(AppSection.allCases) { Text($0.rawValue).tag($0) }
         }
         .pickerStyle(.segmented)
+    }
+}
+
+/// Pantalla de Recuperar: bienvenida o resultados. El visor grande va encima, dentro de la
+/// misma ventana (una hoja aparte oscurecía la ventana de atrás fotografiándola entera, y eso
+/// trababa la apertura).
+private struct RecoverSection: View {
+    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var focus: Focus
+
+    var body: some View {
+        let idle = model.phase == .idle || model.phase == .opening
+        Group {
+            if idle {
+                WelcomeView()
+            } else {
+                ResultsView()
+                    .overlay {
+                        if focus.viewerOpen {
+                            ViewerOverlay()
+                        }
+                    }
+            }
+        }
+        .onChange(of: idle) { Crossfade.next() }
     }
 }

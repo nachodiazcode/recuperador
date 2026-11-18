@@ -4,28 +4,112 @@ import SwiftUI
 
 struct InspectorView: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var focus: Focus
+    /// Lo que el panel muestra. Con una flecha mantenida la selección cambia muchas veces por
+    /// segundo: la galería la sigue al instante y el panel espera a que se detenga, como el panel
+    /// de vista previa del Finder. Rearmarlo en cada paso era lo que trababa la navegación.
+    @State private var shown: Set<Int>?
+
+    private var displayed: Set<Int> { shown ?? focus.selection }
+    var belowWindowToolbar = true
 
     var body: some View {
-        if let item = model.focused {
-            ItemInspector(item: item)
-        } else if model.selection.count > 1 {
-            let items = model.selectedItems
+        VStack(spacing: 0) {
+            Label("Detalles", systemImage: "sidebar.trailing")
+                .font(.subheadline.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            Divider()
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+        }
+        .modifier(WindowToolbarClearance(enabled: belowWindowToolbar))
+        .task(id: focus.selection) {
+            // Con el visor abierto el panel queda tapado: se pone al día al cerrarlo.
+            guard !focus.viewerOpen || shown == nil else { return }
+            if shown != nil, model.isBrowsingFast {
+                try? await Task.sleep(for: .milliseconds(160))
+                guard !Task.isCancelled else { return }
+            }
+            shown = focus.selection
+        }
+        .onChange(of: focus.viewerOpen) { _, open in
+            if !open { shown = focus.selection }
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        if displayed.count == 1, let item = displayed.first.flatMap(model.item) {
+            // Identidad por archivo: reproductores y estados no se arrastran al cambiar de selección.
+            ItemInspector(item: item).id(item.id)
+        } else if displayed.count > 1 {
+            let bytes = displayed == focus.selection
+                ? focus.selectedBytes
+                : displayed.reduce(Int64(0)) { $0 + (model.item($1)?.file.size ?? 0) }
             VStack(spacing: 16) {
                 Image(systemName: "square.stack.3d.up.fill").font(.system(size: 48)).foregroundStyle(Palette.accent)
-                Text("\(items.count) archivos seleccionados").font(.title3.weight(.semibold))
-                Text(ByteCountFormatter.string(fromByteCount: items.reduce(0) { $0 + $1.file.size }, countStyle: .file))
+                Text("\(displayed.count.formatted()) archivos seleccionados").font(.title3.weight(.semibold))
+                Text(Bytes.gigabytesDetailed(bytes))
+                    .font(.headline.monospacedDigit())
                     .foregroundStyle(.secondary)
-                Button { model.recover(items) } label: {
+                Button { model.recover(displayed.compactMap(model.item)) } label: {
                     Label("Recuperar seleccionados", systemImage: "arrow.down.doc.fill").frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                .buttonStyle(GlowButtonStyle())
+                Button { model.openRecoverAll(mode: .current) } label: {
+                    Label("Más formas de recuperar…", systemImage: "externaldrive.fill.badge.arrow.down")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
             }
             .padding(24)
             .frame(maxHeight: .infinity)
         } else {
-            ContentUnavailableView("Selecciona un archivo", systemImage: "photo.on.rectangle.angled",
-                                   description: Text("Verás la vista previa, la información de la foto y el análisis de recuperabilidad."))
+            VStack(spacing: 16) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 56, height: 56)
+                    .background(Palette.gradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .shadow(color: Palette.accent.opacity(0.32), radius: 9, y: 3)
+                    .accessibilityHidden(true)
+                Text("Selecciona un archivo")
+                    .font(.headline)
+                Text("Haz clic en un resultado para ver sus datos, su vista previa y el estado de recuperación.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !model.items.isEmpty {
+                    Divider().padding(.vertical, 4)
+                    VStack(spacing: 8) {
+                        Text("Total escaneado en Gigas")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(Bytes.gigabytes(model.totalBytes))
+                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(Palette.gradient)
+                            .contentTransition(.numericText())
+                        Text("\(model.items.count.formatted()) archivos encontrados")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        Button { model.openRecoverAll() } label: {
+                            Label("Recuperar datos…", systemImage: "externaldrive.fill.badge.arrow.down")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(CompactGlowButtonStyle())
+                        .padding(.top, 6)
+                    }
+                    .padding(14)
+                    .background(Palette.subtleSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Palette.borderStroke))
+                }
+            }
+            .padding(20)
         }
     }
 }
@@ -36,25 +120,37 @@ struct ItemInspector: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                preview
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(item.name).font(.title3.weight(.semibold)).textSelection(.enabled)
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 10) {
+                    ResultFileIcon(category: item.category, size: 36)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(item.name).font(.headline).textSelection(.enabled)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                            .help(item.name)
+                        Text(fileSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 5) {
                     if let folder = item.file.folder {
-                        Label(folder, systemImage: "folder").font(.callout).foregroundStyle(.secondary).lineLimit(2)
+                        Label(folder, systemImage: "folder").lineLimit(2).truncationMode(.middle)
                     }
                     if let date = item.date {
                         Label(date.formatted(date: .long, time: .shortened), systemImage: "calendar")
-                            .font(.callout).foregroundStyle(.secondary)
                     }
                 }
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
                 Button { model.recover([item]) } label: {
                     Label("Recuperar este archivo", systemImage: "arrow.down.doc.fill").frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                .buttonStyle(CompactGlowButtonStyle())
+
+                // Vista previa rápida y de alta resolución
+                preview
 
                 if item.file.likelyOverwritten {
                     Callout(symbol: "exclamationmark.triangle.fill", tint: .orange,
@@ -97,35 +193,34 @@ struct ItemInspector: View {
                     InfoGrid(rows: technicalRows)
                 }
             }
-            .padding(18)
+            .padding(16)
         }
     }
 
-    @ViewBuilder private var preview: some View {
-        Group {
-            if let url = item.localURL {
-                QuickLookPreview(url: url)
-            } else {
-                ZStack {
-                    ThumbnailView(item: item)
-                    VStack(spacing: 10) {
-                        if item.preparing {
-                            ProgressView().controlSize(.large)
-                            Text("Preparando vista previa…").foregroundStyle(.white)
-                        } else if item.file.size > 150 * 1024 * 1024 {
-                            Button { model.prepare(item) } label: { Label("Generar vista previa", systemImage: "eye") }
-                                .controlSize(.large)
-                        } else {
-                            ProgressView().controlSize(.large)
-                        }
-                    }
+    private var fileSummary: String {
+        let size = ByteCountFormatter.string(fromByteCount: item.file.size, countStyle: .file)
+        return item.file.ext.isEmpty ? size : "\(item.file.ext.uppercased()) · \(size)"
+    }
+
+    private var preview: some View {
+        VStack(spacing: 6) {
+            FilePreview(item: item)
+            HStack {
+                Button { model.viewerOpen = true } label: {
+                    Label("Ampliar", systemImage: "arrow.up.left.and.arrow.down.right")
                 }
+                .help("Ver en grande (barra espaciadora)")
+                Spacer()
+                if item.loading, let progress = item.progress {
+                    ProgressView(value: progress).frame(width: 60).controlSize(.small)
+                }
+                Button("Abrir con macOS…") { model.openExternally(item) }
+                    .disabled(item.loading)
             }
+            .font(.caption.weight(.medium))
+            .buttonStyle(.link)
         }
-        .frame(height: 270)
         .frame(maxWidth: .infinity)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.quaternary))
     }
 
     private var technicalRows: [MetaRow] {
@@ -144,6 +239,8 @@ struct ItemInspector: View {
         return rows
     }
 }
+
+// MARK: - Tarjetas auxiliares
 
 struct HealthCard: View {
     @ObservedObject var item: Item
@@ -168,10 +265,9 @@ struct HealthCard: View {
                     }
                 }
             } else {
-                HStack(spacing: 10) {
-                    ProgressView().controlSize(.small)
-                    Text(item.healthNote).foregroundStyle(.secondary)
-                }
+                Text(item.preparing ? "Comprobando el contenido…" : item.healthNote)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -209,13 +305,13 @@ struct InfoGrid: View {
     }
 }
 
-/// Vista previa nativa de Quick Look: imágenes, videos con reproductor, audio, PDF, Office...
+/// Vista previa nativa de Quick Look para formatos de sistema
 struct QuickLookPreview: NSViewRepresentable {
     let url: URL
 
     func makeNSView(context: Context) -> QLPreviewView {
         let view = QLPreviewView(frame: .zero, style: .compact)!
-        view.autostarts = true
+        view.autostarts = false
         view.previewItem = url as NSURL
         return view
     }

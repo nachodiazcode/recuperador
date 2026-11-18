@@ -21,7 +21,15 @@ La pantalla inicial pide el disco, el modo y qué tipos buscar. El modo rápido 
 
 La ventana se puede achicar hasta el ancho de un teléfono. En ese tamaño las tarjetas se apilan, la galería baja a una o dos columnas y la barra lateral y el inspector pasan a ser paneles (Filtros y Detalles). En un ancho de tablet queda la barra lateral y el inspector se abre aparte. En escritorio no cambia.
 
-La lista (el botón al lado de ordenar, o se queda guardada) sirve para revisar miles de archivos. Doble clic abre la vista previa. ⌘R recupera lo seleccionado. ⌘. detiene el escaneo.
+La lista (el botón al lado de ordenar, o se queda guardada) sirve para revisar miles de archivos. ⌘R recupera lo seleccionado. ⌘. detiene el escaneo.
+
+Las miniaturas se leen directo del disco escaneado y solo para lo que está en pantalla, así que no hace falta haber extraído nada. Su tamaño se cambia con el deslizador, pellizcando en el trackpad o con ⌘+ / ⌘−. Al pasar el puntero por una tarjeta aparecen dos atajos: vista previa y recuperar. En la galería las flechas mueven la selección.
+
+Doble clic o la barra espaciadora abren el visor sobre la ventana: ← y → (o la tira de miniaturas de abajo) pasan de archivo, el pellizco, el doble clic o + − 0 hacen zoom en las fotos y Esc lo cierra. Los videos MP4 y MOV se reproducen y se analizan directo del disco, sin copiarlos antes: uno de varios GB empieza a verse en menos de un segundo. Los formatos que macOS no abre (MKV, AVI, WebM) no se pueden comprobar; se recuperan igual y se abren con otra app.
+
+En el visor, "Mejorar" procesa la foto en el propio Mac, sin internet: ajuste automático de Core Image y, en macOS 26, ampliación ×4 con el modelo de superresolución de Apple para fotos de hasta 1920 px de lado (macOS baja el modelo la primera vez). Mantener apretado "comparar" muestra la original. La foto recuperada nunca se modifica: "Guardar copia…" escribe un archivo nuevo, con su fecha y su ubicación, y no deja guardarlo en el disco que se está escaneando.
+
+Las animaciones pesadas (cambio de sección, de tema, abrir el visor) son fundidos de Core Animation: no dependen del hilo principal y no se traban aunque la pantalla nueva tarde en armarse. La selección y el visor viven aparte del resto del estado, así que moverse con las flechas redibuja dos tarjetas y no la ventana entera.
 
 Los sonidos son tonos cortos de sintetizador, en la misma escala: un barrido al empezar, un acorde si hubo resultado, una nota aguda si no apareció nada, un tic al detener y un acorde menor si algo falla. El aviso de macOS sale en silencio, también con la ventana detrás, para no tapar el tono. Los dos se apagan en el menú de la paleta. La primera vez el sistema pide permiso para los avisos.
 
@@ -89,6 +97,7 @@ FLAC, RAR y gzip no declaran su tamaño: el corte es una estimación y la app lo
 - `HFSPlus`: catálogo de un volumen HFS+, leyendo nodos hoja aunque el árbol esté roto.
 - `Signatures`: un parser por formato. Valida la estructura y calcula la longitud.
 - `Carver`: recorre el espacio libre. Por defecto salta el interior de un archivo cuya longitud es exacta.
+- `Extractor`: copia un archivo del disco en tramos de 4 MB, o lo lee a memoria, sin pasar por la caché de páginas. Lo usan la recuperación, las miniaturas y la reproducción de video.
 - `DiskSafety`: impide escribir en el mismo disco físico.
 - `Rescue`: clonado en dos pasadas, al estilo `ddrescue`, para un disco que se está muriendo.
 
@@ -106,4 +115,4 @@ FLAC, RAR y gzip no declaran su tamaño: el corte es una estimación y la app lo
 swift test
 ```
 
-Cubren el carving de JPEG, PNG y GIF sobre una imagen con basura, el salto del interior de un archivo, y un volumen NTFS sintético: un borrado con sus datos en otro clúster, un archivo residente dentro de una carpeta borrada, y un archivo que sigue vivo y no debe aparecer.
+Cubren el carving de JPEG, PNG y GIF sobre una imagen con basura, el salto del interior de un archivo, y un volumen NTFS sintético: un borrado con sus datos en otro clúster, un archivo residente dentro de una carpeta borrada, y un archivo que sigue vivo y no debe aparecer. También la lectura directa: tramos alineados y desalineados, archivos fragmentados y el avance de la copia.
